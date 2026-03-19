@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 
 const regions = ["East", "West", "South", "Midwest"] as const;
-const roundNames = ["Round 1", "Sweet 16", "Region Final"] as const;
+const playPhases = ["region", "finalfour", "championship"] as const;
+const roundNames = ["Round 1", "Sweet 16", "Regional Final"] as const;
 
 const initialRegions: Record<string, string[][]> = {
   East: [["Duke", "Siena"], ["Ohio St.", "TCU"], ["Kansas", "Cal Baptist"], ["UCLA", "UCF"]],
@@ -30,7 +31,10 @@ const logoIds: Record<string, number> = {
   "Texas Tech": 2641,
 };
 
-type PicksState = Record<string, Record<number, Record<number, string>>>;
+type PicksState = Record<string, Record<number, Record<number, string>>> & {
+  finalFour?: Record<number, string>;
+  championship?: Record<number, string>;
+};
 
 function nextRound(teams: string[]) {
   const out: string[][] = [];
@@ -141,6 +145,7 @@ function SummaryList({ title, teams }: { title: string; teams: string[] }) {
 export default function App() {
   const [picks, setPicks] = useState<PicksState>({});
   const [screen, setScreen] = useState<"play" | "summary">("play");
+  const [phase, setPhase] = useState<(typeof playPhases)[number]>("region");
   const [r, setR] = useState(0);
   const [round, setRound] = useState(0);
   const [m, setM] = useState(0);
@@ -148,12 +153,37 @@ export default function App() {
 
   const region = regions[r];
 
+  const regionWinners = useMemo(() => {
+    return regions.map((reg) => {
+      const winner = picks?.[reg]?.[2] ? Object.values(picks[reg][2])[0] : "";
+      return winner;
+    }).filter(Boolean);
+  }, [picks]);
+
   const matchups = useMemo(() => {
-    if (round === 0) return initialRegions[region];
-    return nextRound(Object.values(picks?.[region]?.[round - 1] || {}));
-  }, [region, round, picks]);
+    if (phase === "region") {
+      if (round === 0) return initialRegions[region];
+      return nextRound(Object.values(picks?.[region]?.[round - 1] || {}));
+    }
+
+    if (phase === "finalfour") {
+      return [
+        [regionWinners[0], regionWinners[1]].filter(Boolean),
+        [regionWinners[2], regionWinners[3]].filter(Boolean),
+      ];
+    }
+
+    if (phase === "championship") {
+      return [[picks?.finalFour?.[0], picks?.finalFour?.[1]].filter(Boolean)];
+    }
+
+    return [];
+  }, [phase, round, region, picks, regionWinners]);
 
   const matchup = matchups[m] || [];
+  const regionalChamps = regions.map((reg) => (picks?.[reg]?.[2] ? Object.values(picks[reg][2])[0] : "TBD"));
+  const finalFourWinners = picks?.finalFour ? [picks.finalFour[0], picks.finalFour[1]].filter(Boolean) : [];
+  const nationalChampion = picks?.championship?.[0] || "TBD";
 
   useEffect(() => {
     try {
@@ -162,6 +192,7 @@ export default function App() {
       const parsed = JSON.parse(saved);
       setPicks(parsed.picks || {});
       setScreen(parsed.screen || "play");
+      setPhase(parsed.phase || "region");
       setR(parsed.r || 0);
       setRound(parsed.round || 0);
       setM(parsed.m || 0);
@@ -169,41 +200,70 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem("kid-bracket-2026", JSON.stringify({ picks, screen, r, round, m }));
-  }, [picks, screen, r, round, m]);
+    localStorage.setItem("kid-bracket-2026", JSON.stringify({ picks, screen, phase, r, round, m }));
+  }, [picks, screen, phase, r, round, m]);
 
   function pick(team: string) {
-    setPicks((prev) => {
-      const next = { ...prev };
-      next[region] = next[region] || {};
-      next[region][round] = { ...(next[region][round] || {}), [m]: team };
-      return next;
-    });
+    if (phase === "region") {
+      setPicks((prev) => {
+        const next = { ...prev };
+        next[region] = next[region] || {};
+        next[region][round] = { ...(next[region][round] || {}), [m]: team };
+        return next;
+      });
 
-    if (m < matchups.length - 1) {
-      setM((v) => v + 1);
-      return;
-    }
+      if (m < matchups.length - 1) {
+        setM((v) => v + 1);
+        return;
+      }
 
-    if (round < 2) {
-      setRound((v) => v + 1);
+      if (round < 2) {
+        setRound((v) => v + 1);
+        setM(0);
+        return;
+      }
+
+      if (r < regions.length - 1) {
+        setR((v) => v + 1);
+        setRound(0);
+        setM(0);
+        return;
+      }
+
+      setPhase("finalfour");
       setM(0);
       return;
     }
 
-    if (r < regions.length - 1) {
-      setR((v) => v + 1);
-      setRound(0);
+    if (phase === "finalfour") {
+      setPicks((prev) => ({
+        ...prev,
+        finalFour: { ...(prev.finalFour || {}), [m]: team },
+      }));
+
+      if (m < matchups.length - 1) {
+        setM((v) => v + 1);
+        return;
+      }
+
+      setPhase("championship");
       setM(0);
       return;
     }
 
-    setScreen("summary");
+    if (phase === "championship") {
+      setPicks((prev) => ({
+        ...prev,
+        championship: { 0: team },
+      }));
+      setScreen("summary");
+    }
   }
 
   function reset() {
     setPicks({});
     setScreen("play");
+    setPhase("region");
     setR(0);
     setRound(0);
     setM(0);
@@ -212,11 +272,15 @@ export default function App() {
   }
 
   async function shareBracket() {
-    const lines = ["🏀 My March Madness 2026 Kid Bracket", ""];
-    regions.forEach((reg) => {
-      const champ = picks?.[reg]?.[2] ? Object.values(picks[reg][2])[0] : "TBD";
-      lines.push(`${reg}: ${champ}`);
-    });
+    const lines = [
+      "🏀 My March Madness 2026 Kid Bracket",
+      "",
+      "Regional Winners:",
+      ...regions.map((reg, i) => `${reg}: ${regionalChamps[i]}`),
+      "",
+      `Final Four Winners: ${finalFourWinners.join(" vs ") || "TBD"}`,
+      `National Champion: ${nationalChampion}`,
+    ];
     const text = lines.join("\n");
 
     try {
@@ -249,6 +313,12 @@ export default function App() {
             </div>
           </div>
 
+          <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+            <SummaryList title="Regional Winners" teams={regionalChamps.filter((t) => t !== "TBD")} />
+            <SummaryList title="Final Four Winners" teams={finalFourWinners} />
+            <SummaryList title="National Champion" teams={nationalChampion === "TBD" ? [] : [nationalChampion]} />
+          </div>
+
           {regions.map((reg) => {
             const round1 = Object.values(picks?.[reg]?.[0] || {});
             const round2 = Object.values(picks?.[reg]?.[1] || {});
@@ -259,7 +329,7 @@ export default function App() {
                 <div style={{ display: "grid", gap: 14, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
                   <SummaryList title="Round 1 Winners" teams={round1} />
                   <SummaryList title="Sweet 16" teams={round2} />
-                  <SummaryList title="Region Champ" teams={round3} />
+                  <SummaryList title="Regional Winner" teams={round3} />
                 </div>
               </div>
             );
@@ -268,6 +338,20 @@ export default function App() {
       </div>
     );
   }
+
+  const phaseTitle =
+    phase === "region"
+      ? roundNames[round]
+      : phase === "finalfour"
+      ? "Final Four"
+      : "National Championship";
+
+  const phaseSubtitle =
+    phase === "region"
+      ? `${region} • Game ${m + 1} of ${matchups.length}`
+      : phase === "finalfour"
+      ? `Semifinal ${m + 1} of ${matchups.length}`
+      : "Pick the national champion";
 
   return (
     <div style={{ minHeight: "100vh", background: "linear-gradient(180deg, #e0f2fe 0%, #ffffff 45%, #fef9c3 100%)", padding: 24, fontFamily: "Arial, sans-serif" }}>
@@ -283,9 +367,9 @@ export default function App() {
         </div>
 
         <div style={{ background: "rgba(255,255,255,.8)", borderRadius: 32, padding: 24, boxShadow: "0 16px 36px rgba(0,0,0,.12)" }}>
-          <div style={{ fontSize: 12, fontWeight: 900, textTransform: "uppercase", letterSpacing: 1.6, color: "#64748b" }}>{region}</div>
-          <div style={{ fontSize: 42, fontWeight: 900, color: "#0f172a", marginTop: 6 }}>{roundNames[round]}</div>
-          <div style={{ marginTop: 8, color: "#64748b", fontWeight: 700 }}>Game {m + 1} of {matchups.length}</div>
+          <div style={{ fontSize: 12, fontWeight: 900, textTransform: "uppercase", letterSpacing: 1.6, color: "#64748b" }}>{phase === "region" ? region : phase === "finalfour" ? "Final Four" : "Championship"}</div>
+          <div style={{ fontSize: 42, fontWeight: 900, color: "#0f172a", marginTop: 6 }}>{phaseTitle}</div>
+          <div style={{ marginTop: 8, color: "#64748b", fontWeight: 700 }}>{phaseSubtitle}</div>
 
           {matchup.length === 2 && (
             <div style={{ display: "grid", gap: 16, marginTop: 24 }}>
