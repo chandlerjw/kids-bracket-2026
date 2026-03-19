@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const regions = ["East", "West", "South", "Midwest"] as const;
 const roundNames = ["Round 1", "Sweet 16", "Region Final"] as const;
